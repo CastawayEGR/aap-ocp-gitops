@@ -1,0 +1,299 @@
+name: Validate GitOps Manifests
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'base/**'
+      - 'overlays/**'
+      - 'components/**'
+      - 'argocd/**'
+      - 'namespaces/**'
+      - '.github/workflows/**'
+      - 'Makefile'
+      - '.yamllint'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'base/**'
+      - 'overlays/**'
+      - 'components/**'
+      - 'argocd/**'
+      - 'namespaces/**'
+      - '.github/workflows/**'
+      - 'Makefile'
+      - '.yamllint'
+  workflow_dispatch:
+
+env:
+  KUBERNETES_VERSION: "1.29.0"
+
+jobs:
+  validate-yaml:
+    name: YAML Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate YAML syntax
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: .
+          config_file: .yamllint
+
+  validate-kustomize:
+    name: Kustomize Build - ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - overlay: dev/operator
+            name: dev-operator
+          - overlay: dev/instance
+            name: dev-instance
+          - overlay: staging/operator
+            name: staging-operator
+          - overlay: staging/instance
+            name: staging-instance
+          - overlay: prod/operator
+            name: prod-operator
+          - overlay: prod/instance
+            name: prod-instance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.4.3"
+
+      - name: Build ${{ matrix.name }}
+        run: |
+          echo "Building overlays/${{ matrix.overlay }}"
+          kustomize build overlays/${{ matrix.overlay }} > /tmp/manifest.yaml
+          echo "Generated $(wc -l < /tmp/manifest.yaml) lines"
+
+      - name: Upload rendered manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-${{ matrix.name }}
+          path: /tmp/manifest.yaml
+          retention-days: 7
+
+  validate-argocd:
+    name: Kustomize Build - ArgoCD
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.4.3"
+
+      - name: Build ArgoCD manifests
+        run: |
+          echo "Building argocd/"
+          kustomize build argocd/ > /tmp/argocd-manifest.yaml
+          echo "Generated $(wc -l < /tmp/argocd-manifest.yaml) lines"
+
+      - name: Build namespaces
+        run: |
+          echo "Building namespaces/"
+          kustomize build namespaces/ > /tmp/namespaces-manifest.yaml
+          echo "Generated $(wc -l < /tmp/namespaces-manifest.yaml) lines"
+
+      - name: Upload ArgoCD manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-argocd
+          path: /tmp/argocd-manifest.yaml
+          retention-days: 7
+
+  validate-schemas:
+    name: Kubernetes Schema Validation
+    runs-on: ubuntu-latest
+    needs: [validate-kustomize, validate-argocd]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.4.3"
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.6/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate production manifests
+        run: |
+          echo "Validating overlays/prod/operator"
+          kustomize build overlays/prod/operator | kubeconform \
+            -strict \
+            -ignore-missing-schemas \
+            -kubernetes-version ${{ env.KUBERNETES_VERSION }} \
+            -summary
+
+          echo "Validating overlays/prod/instance"
+          kustomize build overlays/prod/instance | kubeconform \
+            -strict \
+            -ignore-missing-schemas \
+            -kubernetes-version ${{ env.KUBERNETES_VERSION }} \
+            -summary
+
+      - name: Validate namespaces
+        run: |
+          echo "Validating namespaces/"
+          kustomize build namespaces/ | kubeconform \
+            -strict \
+            -kubernetes-version ${{ env.KUBERNETES_VERSION }} \
+            -summary
+
+  dry-run-diff:
+    name: Diff Check (PR only)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: [validate-kustomize]
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          path: pr
+
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.4.3"
+
+      - name: Generate diff for production
+        run: |
+          echo "## Production Operator Changes" >> $GITHUB_STEP_SUMMARY
+          echo '```diff' >> $GITHUB_STEP_SUMMARY
+          diff -u \
+            <(cd base && kustomize build overlays/prod/operator 2>/dev/null || echo "") \
+            <(cd pr && kustomize build overlays/prod/operator) \
+            >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          echo "## Production Instance Changes" >> $GITHUB_STEP_SUMMARY
+          echo '```diff' >> $GITHUB_STEP_SUMMARY
+          diff -u \
+            <(cd base && kustomize build overlays/prod/instance 2>/dev/null || echo "") \
+            <(cd pr && kustomize build overlays/prod/instance) \
+            >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: [validate-kustomize]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.4.3"
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0
+
+      - name: Scan production manifests
+        run: |
+          kustomize build overlays/prod/operator > /tmp/prod-operator.yaml
+          kustomize build overlays/prod/instance > /tmp/prod-instance.yaml
+
+          echo "Scanning production operator manifests..."
+          trivy config /tmp/prod-operator.yaml --severity HIGH,CRITICAL --exit-code 0
+
+          echo "Scanning production instance manifests..."
+          trivy config /tmp/prod-instance.yaml --severity HIGH,CRITICAL --exit-code 0
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-scan-results
+          path: /tmp/*.yaml
+          retention-days: 7
+
+  validate-argocd-apps:
+    name: ArgoCD Application Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Application specs
+        run: |
+          echo "Checking ArgoCD Application and ApplicationSet specs..."
+
+          # Check that all Applications reference the correct project
+          for file in argocd/bootstrap/*.yaml argocd/applicationsets/*.yaml; do
+            if [ -f "$file" ]; then
+              echo "Checking $file"
+              if grep -q "project:" "$file"; then
+                project=$(grep "project:" "$file" | head -1 | awk '{print $2}')
+                if [ "$project" != "aap" ] && [ "$project" != "default" ]; then
+                  echo "Warning: $file uses project '$project'"
+                fi
+              fi
+            fi
+          done
+
+          # Check that syncPolicy is defined
+          for file in argocd/bootstrap/*.yaml argocd/applicationsets/*.yaml; do
+            if [ -f "$file" ]; then
+              if ! grep -q "syncPolicy:" "$file"; then
+                echo "Warning: $file does not define syncPolicy"
+              fi
+            fi
+          done
+
+          echo "ArgoCD Application validation complete"
+
+  summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [validate-yaml, validate-kustomize, validate-argocd, validate-schemas, security-scan, validate-argocd-apps]
+    if: always()
+    steps:
+      - name: Check job results
+        run: |
+          echo "## Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| YAML Syntax | ${{ needs.validate-yaml.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Kustomize Build | ${{ needs.validate-kustomize.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ArgoCD Manifests | ${{ needs.validate-argocd.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Schema Validation | ${{ needs.validate-schemas.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan | ${{ needs.security-scan.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ArgoCD Apps | ${{ needs.validate-argocd-apps.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail if any check failed
+        if: |
+          needs.validate-yaml.result == 'failure' ||
+          needs.validate-kustomize.result == 'failure' ||
+          needs.validate-argocd.result == 'failure' ||
+          needs.validate-schemas.result == 'failure'
+        run: |
+          echo "One or more validation checks failed"
+          exit 1

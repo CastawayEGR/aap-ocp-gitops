@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aap-bootstrap
+  namespace: openshift-gitops
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: aap
+
+  source:
+    # Update with your actual repo URL
+    repoURL: https://github.com/CastawayEGR/aap-ocp-gitops.git
+    targetRevision: main
+    path: argocd
+    directory:
+      recurse: true
+      include: '{projects/*.yaml,applicationsets/*.yaml}'
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openshift-gitops
+
+  # Ignore fields managed by ArgoCD itself on Application/AppProject resources
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      jsonPointers:
+        - /status
+        - /operation
+    - group: argoproj.io
+      kind: AppProject
+      jsonPointers:
+        - /status
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - RespectIgnoreDifferences=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

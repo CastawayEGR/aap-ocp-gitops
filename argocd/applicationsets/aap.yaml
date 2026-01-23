@@ -1,0 +1,68 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: aap
+  namespace: openshift-gitops
+spec:
+  generators:
+    - matrix:
+        generators:
+          # Environments - uncomment to enable staging/prod
+          - list:
+              elements:
+                - env: dev
+                  namespace: aap-dev
+                # - env: staging
+                #   namespace: aap-staging
+                # - env: prod
+                #   namespace: aap
+          # Components - operator must deploy before instance (sync waves)
+          - list:
+              elements:
+                - component: operator
+                  wave: "0"
+                - component: instance
+                  wave: "5"
+  template:
+    metadata:
+      name: "aap-{{env}}-{{component}}"
+      annotations:
+        argocd.argoproj.io/sync-wave: "{{wave}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: aap
+      # These are only relevant for instance (AAP CR), harmless for operator
+      ignoreDifferences:
+        - group: aap.ansible.com
+          kind: AnsibleAutomationPlatform
+          jsonPointers:
+            - /status
+        - group: aap.ansible.com
+          kind: AnsibleAutomationPlatform
+          managedFieldsManagers:
+            - ansible-automation-platform-operator
+      source:
+        repoURL: https://github.com/CastawayEGR/aap-ocp-gitops.git
+        targetRevision: main
+        path: "overlays/{{env}}/{{component}}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+          - SkipDryRunOnMissingResource=true
+          - RespectIgnoreDifferences=true
+          - ServerSideApply=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 5m

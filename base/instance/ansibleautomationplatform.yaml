@@ -1,0 +1,24 @@
+apiVersion: aap.ansible.com/v1alpha1
+kind: AnsibleAutomationPlatform
+metadata:
+  name: aap
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  # Automation Controller (AWX) - enabled by default
+  controller:
+    disabled: false
+    replicas: 1
+
+  # Automation Hub - disabled by default, enable in overlays
+  hub:
+    disabled: true
+
+  # Event-Driven Ansible (EDA) - disabled by default, enable in overlays
+  eda:
+    disabled: true
+
+  # Lightspeed - disabled by default, enable in overlays
+  lightspeed:
+    disabled: true

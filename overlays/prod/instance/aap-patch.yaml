@@ -1,0 +1,23 @@
+apiVersion: aap.ansible.com/v1alpha1
+kind: AnsibleAutomationPlatform
+metadata:
+  name: aap
+spec:
+  # Production configuration - enable additional components as needed
+  controller:
+    disabled: false
+    replicas: 2
+
+  # Uncomment to enable Automation Hub in production
+  # hub:
+  #   disabled: false
+  #   replicas: 2
+
+  # Uncomment to enable EDA in production
+  # eda:
+  #   disabled: false
+  #   replicas: 1
+
+  # Uncomment to enable Lightspeed in production
+  # lightspeed:
+  #   disabled: false

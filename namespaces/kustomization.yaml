@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Pre-provision namespaces before ArgoCD deployment
+# Apply with: oc apply -k namespaces/
+# This should be run by platform/infrastructure team with namespace creation permissions
+
+resources:
+  - aap-dev.yaml
+  - aap-staging.yaml
+  - aap-prod.yaml

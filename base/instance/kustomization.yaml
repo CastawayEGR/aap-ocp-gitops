@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+commonLabels:
+  app.kubernetes.io/name: aap
+  app.kubernetes.io/component: instance
+  app.kubernetes.io/part-of: ansible-automation-platform
+  app.kubernetes.io/managed-by: argocd
+
+resources:
+  - ansibleautomationplatform.yaml
